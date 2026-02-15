@@ -19,6 +19,7 @@ router.get("/:username", auth, async (req, res) => {
       username: user.username,
       fullName: `${user.firstName} ${user.lastName}`,
       bio: user.bio,
+      city: user.city,
       displayPicture: user.displayPicture,
       followerCount: user.followers.length,
       followingCount: user.following.length,
@@ -26,6 +27,8 @@ router.get("/:username", auth, async (req, res) => {
       isFollowing: isFollowing,
       isOwnProfile: req.user.id === user._id.toString(),
       followsBack: followsBack,
+      isPrivate: user.isPrivate,
+      hasPendingRequest: user.followRequests.some(req => req.requester.toString() === currentUser._id.toString() && req.status === 'pending'),
     });
   } catch (err) {
     res.status(500).json({ error: "Server error" });
@@ -42,6 +45,7 @@ router.get("/public/:username", async (req, res) => {
       username: user.username,
       fullName: `${user.firstName} ${user.lastName}`,
       bio: user.bio,
+      city: user.city,
       displayPicture: user.displayPicture,
       postCount: user.postCount,
       followerCount: user.followers.length,

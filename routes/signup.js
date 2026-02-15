@@ -75,7 +75,7 @@ router.get('/count-mobile/:mobile', async (req, res) => {
 
 router.post('/', async (req, res) => {
   try {
-    const { email, mobile, confirmPassword, username, password, firstName, referralCode } = req.body;
+    const { email, mobile, confirmPassword, username, password, firstName, referralCode, city } = req.body;
 
     if (!firstName || !username || !password || !confirmPassword || !email) {
       return res.status(400).json({ error: 'First name, username, password, confirm password, and email are required' });
@@ -156,6 +156,7 @@ router.post('/', async (req, res) => {
       referralToken,
       referredBy,
       anonId,
+      city: city || '',
       displayPicture: 'https://res.cloudinary.com/dhiw3k8to/image/upload/v1758988596/myUploads/fzf1dskuqnzrt92rt6px.jpg'
     });
     const savedUser = await newUser.save();

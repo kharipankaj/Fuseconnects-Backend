@@ -20,7 +20,7 @@ const extractPublicId = (url) => {
 router.get("/", auth, async (req, res) => {
   try {
     const user = await User.findById(req.user.id).select(
-      "firstName lastName username bio displayPicture followerCount followingCount postCount SparkCount gender birthday location email mobile createdAt isPrivate country state district"
+      "firstName lastName username bio displayPicture followerCount followingCount postCount SparkCount gender birthday location email mobile createdAt isPrivate country state district city"
     );
 
     if (!user) return res.status(404).json({ message: "User not found" });
@@ -29,6 +29,7 @@ router.get("/", auth, async (req, res) => {
       username: user.username,
       fullName: `${user.firstName} ${user.lastName}`,
       bio: user.bio || "",
+      city: user.city || "",
       displayPicture: user.displayPicture || null,
       followerCount: user.followerCount,
       followingCount: user.followingCount,
@@ -104,11 +105,11 @@ router.get("/check-username/:username", async (req, res) => {
 
 router.put("/edit", auth, cloudinaryUpload("profilePhoto"), async (req, res) => {
   try {
-    const { firstName, lastName, username, bio, gender, birthday, location, latitude, longitude, isPrivate, country, state, district } = req.body;
+    const { firstName, lastName, username, bio, gender, birthday, location, latitude, longitude, isPrivate, country, state, district, city } = req.body;
     console.log("PUT /edit request body:", req.body);
 
     const updateData = {};
-    ["firstName","lastName","username","bio","gender","birthday","location","latitude","longitude","isPrivate","country","state","district"]
+    ["firstName","lastName","username","bio","gender","birthday","location","latitude","longitude","isPrivate","country","state","district","city"]
       .forEach(key => {
         if (req.body[key] !== undefined) updateData[key] = req.body[key];
       });
