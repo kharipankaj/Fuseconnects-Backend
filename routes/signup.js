@@ -77,6 +77,11 @@ router.post('/', async (req, res) => {
   try {
     const { email, mobile, confirmPassword, username, password, firstName, referralCode, city } = req.body;
 
+    // DEBUG: log city to verify frontend is sending it (remove in production)
+    if (process.env.NODE_ENV !== 'production') {
+      console.log('Signup request city:', city);
+    }
+
     if (!firstName || !username || !password || !confirmPassword || !email) {
       return res.status(400).json({ error: 'First name, username, password, confirm password, and email are required' });
     }
@@ -160,6 +165,10 @@ router.post('/', async (req, res) => {
       displayPicture: 'https://res.cloudinary.com/dhiw3k8to/image/upload/v1758988596/myUploads/fzf1dskuqnzrt92rt6px.jpg'
     });
     const savedUser = await newUser.save();
+
+    if (process.env.NODE_ENV !== 'production') {
+      console.log('Saved user city:', savedUser.city);
+    }
 
     // Generate and set tokens on signup (auto-login)
     const accessToken = generateAccessToken(savedUser._id, savedUser.username);
