@@ -42,14 +42,16 @@ router.delete("/room/:roomId", auth, async (req, res) => {
     const { roomId } = req.params;
     const { reason } = req.body;
 
+    console.log("DELETE /anonhub/room called by:", userId, "params:", req.params, "body:", req.body);
     const room = await CommunityRoom.findOne({ roomId });
 
     if (!room) {
       return res.status(404).json({ message: "Room not found" });
     }
 
-    // 🔐 Owner check
-    if (room.createdBy.toString() !== userId) {
+    // 🔐 Owner check (guard for missing createdBy)
+    if (!room.createdBy || String(room.createdBy) !== String(userId)) {
+      console.warn("Unauthorized delete attempt:", { roomId, roomCreatedBy: room.createdBy, userId });
       return res.status(403).json({ message: "Not authorized" });
     }
 
@@ -61,7 +63,9 @@ router.delete("/room/:roomId", auth, async (req, res) => {
     const systemMsg = `Room "${room.roomName}" was deleted by ${req.user.anonId}. Reason: ${reason || "No reason provided"}`;
 
     // NOTE: io global hona chahiye (app.js me set)
-    global.io?.to(room.createdBy.toString()).emit("system_message", systemMsg);
+    if (room.createdBy) {
+      global.io?.to(room.createdBy.toString()).emit("system_message", systemMsg);
+    }
 
     return res.json({
       success: true,
@@ -145,35 +149,6 @@ router.get("/my-rooms", auth, async (req, res) => {
     res.status(500).json({ message: "Server error" });
   }
 });
-router.delete("/room/:roomId", auth, async (req, res) => {
-  try {
-    const userId = req.user.id;
-    const { roomId } = req.params;
-
-    const room = await CommunityRoom.findOne({ roomId });
-
-    if (!room) {
-      return res.status(404).json({ message: "Room not found" });
-    }
-
-    // 🔐 Owner check
-    if (room.createdBy.toString() !== userId) {
-      return res.status(403).json({ message: "Not authorized" });
-    }
-
-    // ✅ Soft delete
-    room.isActive = false;
-    await room.save();
-
-    res.json({
-      success: true,
-      message: "Room deleted",
-    });
-  } catch (err) {
-    console.error("Delete room error:", err);
-    res.status(500).json({ message: "Server error" });
-  }
-});
 router.put("/room/:roomId", auth, async (req, res) => {
   try {
     const userId = req.user.id;
@@ -186,7 +161,7 @@ router.put("/room/:roomId", auth, async (req, res) => {
       return res.status(404).json({ message: "Room not found" });
     }
 
-    if (room.createdBy.toString() !== userId) {
+    if (!room.createdBy || room.createdBy.toString() !== userId) {
       return res.status(403).json({ message: "Not authorized" });
     }
 
