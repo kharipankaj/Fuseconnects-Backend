@@ -75,7 +75,7 @@ router.get('/count-mobile/:mobile', async (req, res) => {
 
 router.post('/', async (req, res) => {
   try {
-    const { email, mobile, confirmPassword, username, password, firstName, referralCode, city } = req.body;
+    const { email, mobile, confirmPassword, username, password, firstName, lastName, referralCode, city } = req.body;
 
     // DEBUG: log city to verify frontend is sending it (remove in production)
     if (process.env.NODE_ENV !== 'production') {
@@ -154,6 +154,7 @@ router.post('/', async (req, res) => {
 
     const newUser = new User({
       firstName,
+      lastName: lastName || '',
       username,
       password,
       email,

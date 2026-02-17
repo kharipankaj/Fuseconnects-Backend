@@ -554,7 +554,12 @@ module.exports = function setupSocketHandlers(io, redisClient) {
 
         const community = await CommunityRoom.findOneAndUpdate(
           { roomId: fullRoomId },
-          { $addToSet: { anonIds: socket.anonId } },
+          {
+            roomId: fullRoomId,
+            roomName: roomId.replace(/_/g, " ").toUpperCase(),
+            city: (user.city || "").toLowerCase(),
+            $addToSet: { anonIds: socket.anonId }
+          },
           { upsert: true, new: true }
         );
 

@@ -111,7 +111,14 @@ router.put("/edit", auth, cloudinaryUpload("profilePhoto"), async (req, res) => 
     const updateData = {};
     ["firstName","lastName","username","bio","gender","birthday","location","latitude","longitude","isPrivate","country","state","district","city"]
       .forEach(key => {
-        if (req.body[key] !== undefined) updateData[key] = req.body[key];
+        if (req.body[key] !== undefined) {
+          // For lastName, ensure empty string instead of undefined
+          if (key === 'lastName' && (!req.body[key] || req.body[key] === 'undefined')) {
+            updateData[key] = '';
+          } else {
+            updateData[key] = req.body[key];
+          }
+        }
       });
     console.log("Update data:", updateData);
 
