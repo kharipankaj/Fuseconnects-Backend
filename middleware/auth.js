@@ -6,12 +6,16 @@ module.exports = async function (req, res, next) {
 
   if (!accessToken) {
     console.log("🔴 Auth failed: No access token in cookies");
+    console.log("   Available cookies:", Object.keys(req.cookies));
     return res.status(401).json({ message: "No token, authorization denied" });
   }
 
   try {
     // Verify JWT signature and expiry
     const decoded = jwt.verify(accessToken, process.env.JWT_SECRET);
+    console.log(`🔵 Token verified for user: ${decoded.username}`);
+    console.log(`   User ID: ${decoded.id}`);
+    console.log(`   Token role (embedded): ${decoded.role}`);
     
     // Validate token type
     if (decoded.type !== "access") {
@@ -26,11 +30,15 @@ module.exports = async function (req, res, next) {
       return res.status(401).json({ message: "User not found" });
     }
     
+    console.log(`   DB role (fresh): ${user.role}`);
+    
     req.user = { 
       id: decoded.id, 
       username: user.username, 
       role: user.role 
     };
+    
+    console.log(`✅ Auth success: ${user.username} (${user.role})`);
     
     next();
     

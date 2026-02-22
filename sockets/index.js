@@ -8,6 +8,9 @@ const GeneralRoom = require("../models/GeneralRoom");
 const CommunityRoom = require("../models/CommunityRoom.js");
 const RoleAssignment = require("../models/RoleAssignment");
 const ModerationReport = require("../models/ModerationReport");
+const UserWarning = require("../models/UserWarning");
+const { moderateMessage } = require("../utils/moderation");
+const { checkIfUserIsBlocked } = require("../utils/blockingHelper");
 
 const inMemory = {
   userSockets: new Map(),
@@ -443,6 +446,42 @@ module.exports = function setupSocketHandlers(io, redisClient) {
         const ROOM = rooms[0];
         const timestamp = Date.now();
 
+        const blockStatus = await checkIfUserIsBlocked(socket.user.id, socket.anonId);
+        if (blockStatus.isBlocked) {
+          socket.emit("user_blocked", {
+            remainingMinutes: blockStatus.remainingMinutes,
+            reason: blockStatus.reason,
+            message: `You have been blocked by moderators for ${blockStatus.remainingMinutes} minutes.`,
+            timestamp,
+          });
+          return; 
+        }
+
+        const moderationResult = await moderateMessage(message);
+        
+        if (!moderationResult.isSafe) {
+          console.log(`🚫 Blocked unsafe message from ${socket.anonId}: ${moderationResult.categories}`);
+          
+          await UserWarning.create({
+            userId: socket.user.id,
+            anonId: socket.anonId,
+            roomId: ROOM,
+            roomType: "general",
+            violationType: Object.keys(moderationResult.categories)[0],
+            reason: moderationResult.warning,
+            message: message.substring(0, 200),
+          });
+
+          socket.emit("moderation_warning", {
+            warning: moderationResult.warning,
+            category: Object.keys(moderationResult.categories)[0],
+            timestamp: timestamp,
+          });
+
+          return; 
+        }
+
+        // ✅ SAFE MESSAGE - Broadcast to room
         const cityName = ROOM.replace(/^general:/, "");
         const msgDoc = new Message({
           senderType: "anonymous",
@@ -693,9 +732,26 @@ module.exports = function setupSocketHandlers(io, redisClient) {
       try {
         if (!roomId || !message?.trim()) return;
 
+        // 📏 Limit message to 120 characters for anonhub
+        if (message.trim().length > 120) {
+          return socket.emit("system_message", "Message should not exceed 120 characters");
+        }
+
         const anonId = socket.anonId;
         if (!anonId) {
           return socket.emit("system_message", "Not a member of this room");
+        }
+
+        // 🔒 CHECK IF USER IS BLOCKED
+        const blockStatus = await checkIfUserIsBlocked(socket.user?.id, anonId);
+        if (blockStatus.isBlocked) {
+          socket.emit("user_blocked", {
+            remainingMinutes: blockStatus.remainingMinutes,
+            reason: blockStatus.reason,
+            message: `You have been blocked by moderators for ${blockStatus.remainingMinutes} minutes.`,
+            timestamp: Date.now(),
+          });
+          return; // Don't process the message
         }
 
         roomId = roomId.trim().toLowerCase();
@@ -707,6 +763,35 @@ module.exports = function setupSocketHandlers(io, redisClient) {
           return socket.emit("system_message", "Not a member of this room");
         }
 
+        // 🔍 MODERATION CHECK
+        const moderationResult = await moderateMessage(message);
+        
+        if (!moderationResult.isSafe) {
+          // ❌ UNSAFE MESSAGE - Block and warn user
+          console.log(`🚫 Blocked unsafe message in room ${fullRoomId} from ${anonId}: ${moderationResult.categories}`);
+          
+          // Create warning record
+          await UserWarning.create({
+            userId: socket.user?.id,
+            anonId: anonId,
+            roomId: fullRoomId,
+            roomType: "community",
+            violationType: Object.keys(moderationResult.categories)[0],
+            reason: moderationResult.warning,
+            message: message.substring(0, 200),
+          });
+
+          // Send warning to user
+          socket.emit("moderation_warning", {
+            warning: moderationResult.warning,
+            category: Object.keys(moderationResult.categories)[0],
+            timestamp: Date.now(),
+          });
+
+          return; // Don't broadcast the message
+        }
+
+        // ✅ SAFE MESSAGE - Broadcast to room
         const msgDoc = await Message.create({
           senderType: "anonymous",
           senderId: anonId,
