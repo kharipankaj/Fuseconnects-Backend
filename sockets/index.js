@@ -238,8 +238,20 @@ module.exports = function setupSocketHandlers(io, redisClient) {
   }
 
   async function resolveSocketUser(socket) {
-    const username = socket.user?.username;
-    const userId = socket.user?.id;
+    const username =
+      socket.user?.username ||
+      socket.user?.user?.username ||
+      socket.user?.name ||
+      null;
+    const userId =
+      socket.user?.id ||
+      socket.user?.userId ||
+      socket.user?._id ||
+      socket.user?.sub ||
+      socket.user?.uid ||
+      socket.user?.user?.id ||
+      socket.user?.user?._id ||
+      null;
 
     if (username) {
       return User.findOne({ username }).select("_id username city anonId role").lean();
@@ -443,8 +455,15 @@ module.exports = function setupSocketHandlers(io, redisClient) {
     socket.on("join_general", async (payload = {}) => {
       try {
         const user = await resolveSocketUser(socket);
-        if (!user || !user.anonId) {
+        if (!user) {
+          console.warn("join_general auth failed:", {
+            socketId: socket.id,
+            socketUser: socket.user || null,
+          });
           return socket.emit("system_message", "Authentication required");
+        }
+        if (!user.anonId) {
+          return socket.emit("system_message", "Anon ID not assigned");
         }
 
         const requestedCity =
@@ -690,8 +709,11 @@ module.exports = function setupSocketHandlers(io, redisClient) {
 
         roomId = roomId.trim().toLowerCase();
         const user = await resolveSocketUser(socket);
-        if (!user || !user.anonId) {
+        if (!user) {
           return socket.emit("system_message", "Authentication required");
+        }
+        if (!user.anonId) {
+          return socket.emit("system_message", "Anon ID not assigned");
         }
         const userIdString = String(user._id);
 
