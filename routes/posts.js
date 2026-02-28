@@ -313,6 +313,33 @@ router.post("/:postId/comments/:commentId/report", auth, async (req, res) => {
   }
 });
 
+router.delete("/:postId/comment/:commentId", auth, async (req, res) => {
+  try {
+    const { postId, commentId } = req.params;
+
+    const post = await Post.findById(postId);
+    if (!post) return res.status(404).json({ error: "Post not found" });
+
+    const comment = post.comments.id(commentId);
+    if (!comment) return res.status(404).json({ error: "Comment not found" });
+
+    const isCommentOwner = String(comment.user) === String(req.user.id);
+    const isPostOwner = String(post.userId) === String(req.user.id);
+    if (!isCommentOwner && !isPostOwner) {
+      return res.status(403).json({ error: "Not authorized to delete this comment" });
+    }
+
+    comment.deleteOne();
+    await post.save();
+    await post.populate("comments.user", "username displayPicture");
+
+    res.json({ comments: post.comments });
+  } catch (err) {
+    console.error("Error deleting comment:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.post("/:id/hide", auth, async (req, res) => {
   try {
     const post = await Post.findById(req.params.id);

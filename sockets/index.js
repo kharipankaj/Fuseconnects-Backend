@@ -3,7 +3,6 @@ const { createAdapter } = require("@socket.io/redis-adapter");
 const MessageModel = require("../models/message");
 const Message = MessageModel.default || MessageModel;
 const User = require("../models/User");
-const Room = require("../models/Room");
 const GeneralRoom = require("../models/GeneralRoom");
 const CommunityRoom = require("../models/CommunityRoom.js");
 const RoleAssignment = require("../models/RoleAssignment");
@@ -17,6 +16,7 @@ const inMemory = {
   roomUsers: new Map(),
   identityRooms: new Map(),
   roomAnonIds: new Map(),
+  anonMessageCooldownUntil: new Map(),
 };
 
 const k = {
@@ -40,6 +40,7 @@ async function initRedisAdapter(io) {
 }
 
 module.exports = function setupSocketHandlers(io, redisClient) {
+  const ANON_MESSAGE_COOLDOWN_MS = 10 * 1000;
   let redis = redisClient;
 
   const useRedis = !!process.env.REDIS_URL;
@@ -144,10 +145,111 @@ module.exports = function setupSocketHandlers(io, redisClient) {
     }
   }
 
+  async function emitStaffOnlineUpdate(roomId) {
+    try {
+      const identities = await storage.getRoomIdentities(roomId);
+      const userIds = identities
+        .filter((id) => id.startsWith("u:"))
+        .map((id) => id.slice(2));
+
+      if (!userIds.length) {
+        io.to(roomId).emit("staff_online_update", { staff: [] });
+        return;
+      }
+
+      const roles = await RoleAssignment.find({
+        user: { $in: userIds },
+        role: { $in: ["moderator", "admin"] },
+        revoked: false,
+      })
+        .select("user role")
+        .lean();
+
+      const roleMap = new Map();
+      for (const entry of roles) {
+        const uid = String(entry.user);
+        const prev = roleMap.get(uid);
+        if (!prev || (prev !== "admin" && entry.role === "admin")) {
+          roleMap.set(uid, entry.role);
+        }
+      }
+
+      const users = await User.find({ _id: { $in: userIds } })
+        .select("_id anonId role")
+        .lean();
+
+      for (const user of users) {
+        const uid = String(user._id);
+        const roleFromUser = user.role;
+        if (roleFromUser === "admin" || roleFromUser === "moderator") {
+          const prev = roleMap.get(uid);
+          if (!prev || (prev !== "admin" && roleFromUser === "admin")) {
+            roleMap.set(uid, roleFromUser);
+          }
+        }
+      }
+
+      const staffIds = Array.from(roleMap.keys());
+      if (!staffIds.length) {
+        io.to(roomId).emit("staff_online_update", { staff: [] });
+        return;
+      }
+
+      const staff = users
+        .filter((u) => staffIds.includes(String(u._id)))
+        .map((u) => ({
+        anonId: u.anonId || `u:${u._id}`,
+        role: roleMap.get(String(u._id)) || "moderator",
+      }));
+
+      io.to(roomId).emit("staff_online_update", { staff });
+    } catch (err) {
+      console.error("emitStaffOnlineUpdate error:", err);
+    }
+  }
+
   function getIdentity(socket) {
     if (socket.user && socket.user.id) return `u:${socket.user.id}`;
     if (socket.anonId) return `a:${socket.anonId}`;
     return `s:${socket.id}`;
+  }
+
+  function formatCityRoomName(city) {
+    if (!city) return "Global";
+    return city
+      .toString()
+      .trim()
+      .split(/[-_\s]+/)
+      .filter(Boolean)
+      .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+      .join(" ");
+  }
+
+  function getRemainingCooldownMs(identity) {
+    const cooldownUntil = inMemory.anonMessageCooldownUntil.get(identity) || 0;
+    return Math.max(0, cooldownUntil - Date.now());
+  }
+
+  function startCooldown(identity) {
+    inMemory.anonMessageCooldownUntil.set(
+      identity,
+      Date.now() + ANON_MESSAGE_COOLDOWN_MS
+    );
+  }
+
+  async function resolveSocketUser(socket) {
+    const username = socket.user?.username;
+    const userId = socket.user?.id;
+
+    if (username) {
+      return User.findOne({ username }).select("_id username city anonId role").lean();
+    }
+
+    if (userId) {
+      return User.findById(userId).select("_id username city anonId role").lean();
+    }
+
+    return null;
   }
 
   return async function attachAll(socket) {
@@ -194,20 +296,28 @@ module.exports = function setupSocketHandlers(io, redisClient) {
   socket.on("general_delete_message", async ({ messageId }) => {
     try {
       const msg = await Message.findById(messageId);
-      if (!msg) return;
+      if (!msg) {
+        socket.emit("system_message", "Message not found");
+        return;
+      }
 
       if (msg.roomType !== "general") return;
 
       const isMod = await isModerator(socket.user?.id, "general");
-      const isSender = msg.senderId === socket.anonId;
+      const isSender = String(msg.senderId) === String(socket.anonId);
 
       if (!isSender && !isMod) return;
 
-      const ROOM = msg.room;
+      const ROOM = msg.roomId || msg.room;
 
       await Message.findByIdAndDelete(messageId);
 
-      io.to(ROOM).emit("message_deleted", { messageId });
+      // Always confirm deletion back to requester immediately.
+      socket.emit("message_deleted", { messageId });
+
+      if (ROOM) {
+        io.to(ROOM).emit("message_deleted", { messageId });
+      }
 
       // Emit to moderator's sockets as well, in case they are not in the room
       if (isMod) {
@@ -330,18 +440,22 @@ module.exports = function setupSocketHandlers(io, redisClient) {
       console.warn("Failed to add socket to identity storage:", err);
     }
 
-    socket.on("join_general", async () => {
+    socket.on("join_general", async (payload = {}) => {
       try {
-        const userId = socket.user && socket.user.id;
-        let user = null;
-
-        if (userId) {
-          user = await User.findById(userId).select("city anonId").lean();
+        const user = await resolveSocketUser(socket);
+        if (!user || !user.anonId) {
+          return socket.emit("system_message", "Authentication required");
         }
 
-        const city = (user && user.city && user.city.trim().toLowerCase()) || "global";
-        const anonId = (user && user.anonId) || `guest_${socket.id.slice(0, 8)}`;
+        const requestedCity =
+          typeof payload?.city === "string" ? payload.city.trim().toLowerCase() : "";
+        const canOverrideCity = requestedCity && (await isModerator(user._id, "general"));
+        const city = canOverrideCity
+          ? requestedCity
+          : (user.city && user.city.trim().toLowerCase()) || "global";
+        const anonId = user.anonId;
         const ROOM = `general:${city}`;
+        const generalRoomName = formatCityRoomName(city);
 
         socket.anonId = anonId;
         socket.join(ROOM);
@@ -350,11 +464,18 @@ module.exports = function setupSocketHandlers(io, redisClient) {
 
         if (!room) {
           await GeneralRoom.create({
+            name: generalRoomName,
             city,
             members: 1,
             anonIds: [anonId],
           });
         } else {
+          if (!room.name) {
+            await GeneralRoom.updateOne(
+              { city },
+              { $set: { name: generalRoomName } }
+            );
+          }
           if (!room.anonIds.includes(anonId)) {
             await GeneralRoom.updateOne(
               { city },
@@ -381,6 +502,13 @@ module.exports = function setupSocketHandlers(io, redisClient) {
             members: await storage.getRoomIdentities(ROOM),
           });
         }
+        io.to(ROOM).emit("online_count", {
+          count: await storage.getRoomOnlineCount(ROOM),
+        });
+        io.to(ROOM).emit("online_members", {
+          members: await storage.getRoomIdentities(ROOM),
+        });
+        await emitStaffOnlineUpdate(ROOM);
 
         const deliveredIds = new Set();
         try {
@@ -457,31 +585,17 @@ module.exports = function setupSocketHandlers(io, redisClient) {
           }
         }
 
-        const moderationResult = await moderateMessage(message);
-        
-        if (!moderationResult.isSafe) {
-          console.log(`🚫 Blocked unsafe message from ${socket.anonId}: ${moderationResult.categories}`);
-          
-          if (socket.user?.id) {
-            await UserWarning.create({
-              userId: socket.user.id,
-              anonId: socket.anonId,
-              roomId: ROOM,
-              roomType: "general",
-              violationType: Object.keys(moderationResult.categories)[0],
-              reason: moderationResult.warning,
-              message: message.substring(0, 200),
-            });
-          }
-
-          socket.emit("moderation_warning", {
-            warning: moderationResult.warning,
-            category: Object.keys(moderationResult.categories)[0],
-            timestamp: timestamp,
+        const remainingCooldownMs = getRemainingCooldownMs(identity);
+        if (remainingCooldownMs > 0) {
+          socket.emit("message_cooldown", {
+            remainingSeconds: Math.ceil(remainingCooldownMs / 1000),
           });
-
-          return; 
+          return;
         }
+        startCooldown(identity);
+        socket.emit("message_cooldown", { remainingSeconds: 10 });
+
+
 
         // ✅ SAFE MESSAGE - Broadcast to room
         const cityName = ROOM.replace(/^general:/, "");
@@ -533,72 +647,72 @@ module.exports = function setupSocketHandlers(io, redisClient) {
             });
           }
         }
+
+        (async () => {
+          try {
+            const moderationResult = await moderateMessage(message);
+            if (moderationResult.isSafe) return;
+
+            await Message.deleteOne({ _id: msgDoc._id });
+            io.to(ROOM).emit("message_deleted", { messageId: msgDoc._id });
+
+            if (socket.user?.id) {
+              await UserWarning.create({
+                userId: socket.user.id,
+                anonId: socket.anonId,
+                roomId: ROOM,
+                roomType: "general",
+                violationType: Object.keys(moderationResult.categories)[0],
+                reason: moderationResult.warning,
+                message: message.substring(0, 200),
+              });
+            }
+
+            socket.emit("moderation_warning", {
+              warning: moderationResult.warning,
+              category: Object.keys(moderationResult.categories)[0],
+              timestamp: Date.now(),
+            });
+          } catch (moderationErr) {
+            console.error("general background moderation error:", moderationErr);
+          }
+        })();
       } catch (err) {
         console.error("send_message error:", err);
       }
     });
 
-    socket.on("join_user_room", async ({ roomId }) => {
+    socket.on("join_user_room", async ({ roomId, city: roomCityOverride }) => {
       try {
         if (!roomId || typeof roomId !== "string") {
           return socket.emit("system_message", "Invalid room");
         }
 
-        const authUserId = socket.user?.id;
-        if (!authUserId) {
+        roomId = roomId.trim().toLowerCase();
+        const user = await resolveSocketUser(socket);
+        if (!user || !user.anonId) {
           return socket.emit("system_message", "Authentication required");
         }
+        const userIdString = String(user._id);
 
-        roomId = roomId.trim().toLowerCase();
-        const userIdString = String(authUserId);
-
-        const user = await User.findById(authUserId)
-          .select("city anonId")
-          .lean();
-
-        if (!user || !user.anonId) {
-          return socket.emit("system_message", "User not found");
-        }
+        const requestedCity =
+          typeof roomCityOverride === "string" ? roomCityOverride.trim().toLowerCase() : "";
+        const canOverrideCity = requestedCity && (await isModerator(user._id, "community"));
+        const effectiveCity = canOverrideCity
+          ? requestedCity
+          : (user.city || "global").toLowerCase();
 
         socket.anonId = user.anonId;
-        socket.city = user.city;
+        socket.city = effectiveCity;
 
-        const fullRoomId = `anon_${user.city.toLowerCase()}_${roomId}`;
-
-        let room = await Room.findOne({ roomId }).lean();
-
-        if (!room) {
-          const created = await Room.create({
-            roomId,
-            name: roomId.replace(/_/g, " ").toUpperCase(),
-            city: (user.city || "").toLowerCase(),
-            active: true,
-          });
-          room = created.toObject();
-        }
-
-        if (!room.active) {
-          return socket.emit("system_message", "Room not available");
-        }
-
-        if (
-          (room.city || "").trim().toLowerCase() !==
-          (user.city || "").trim().toLowerCase()
-        ) {
-          return socket.emit("system_message", "Room belongs to another city");
-        }
-
-        await Room.updateOne(
-          { roomId },
-          { $addToSet: { users: userIdString } }
-        );
+        const fullRoomId = `anon_${socket.city}_${roomId}`;
 
         const community = await CommunityRoom.findOneAndUpdate(
           { roomId: fullRoomId },
           {
             roomId: fullRoomId,
             roomName: roomId.replace(/_/g, " ").toUpperCase(),
-            city: (user.city || "").toLowerCase(),
+            city: effectiveCity,
             $addToSet: { anonIds: socket.anonId }
           },
           { upsert: true, new: true }
@@ -624,30 +738,32 @@ module.exports = function setupSocketHandlers(io, redisClient) {
 
         const deliveredIds = new Set();
 
-        const pending = await Message.find({
-          roomId: fullRoomId,
-          pendingFor: userIdString,
-        })
-          .sort({ sentAt: 1 })
-          .lean();
+        if (userIdString) {
+          const pending = await Message.find({
+            roomId: fullRoomId,
+            pendingFor: userIdString,
+          })
+            .sort({ sentAt: 1 })
+            .lean();
 
-        for (const msg of pending) {
-          socket.emit("receive_message", {
-            id: msg._id,
-            message: msg.text,
-            time: msg.sentAt || msg.createdAt,
-            user: msg.senderId,
-          });
+          for (const msg of pending) {
+            socket.emit("receive_message", {
+              id: msg._id,
+              message: msg.text,
+              time: msg.sentAt || msg.createdAt,
+              user: msg.senderId,
+            });
 
-          deliveredIds.add(String(msg._id));
+            deliveredIds.add(String(msg._id));
 
-          await Message.updateOne(
-            { _id: msg._id },
-            {
-              $pull: { pendingFor: userIdString },
-              $addToSet: { deliveredTo: userIdString },
-            }
-          );
+            await Message.updateOne(
+              { _id: msg._id },
+              {
+                $pull: { pendingFor: userIdString },
+                $addToSet: { deliveredTo: userIdString },
+              }
+            );
+          }
         }
 
         io.to(fullRoomId).emit("online_count", {
@@ -745,15 +861,17 @@ module.exports = function setupSocketHandlers(io, redisClient) {
         }
 
         // 🔒 CHECK IF USER IS BLOCKED
-        const blockStatus = await checkIfUserIsBlocked(socket.user?.id, anonId);
-        if (blockStatus.isBlocked) {
-          socket.emit("user_blocked", {
-            remainingMinutes: blockStatus.remainingMinutes,
-            reason: blockStatus.reason,
-            message: `You have been blocked by moderators for ${blockStatus.remainingMinutes} minutes.`,
-            timestamp: Date.now(),
-          });
-          return; // Don't process the message
+        if (socket.user?.id) {
+          const blockStatus = await checkIfUserIsBlocked(socket.user.id, anonId);
+          if (blockStatus.isBlocked) {
+            socket.emit("user_blocked", {
+              remainingMinutes: blockStatus.remainingMinutes,
+              reason: blockStatus.reason,
+              message: `You have been blocked by moderators for ${blockStatus.remainingMinutes} minutes.`,
+              timestamp: Date.now(),
+            });
+            return; // Don't process the message
+          }
         }
 
         roomId = roomId.trim().toLowerCase();
@@ -765,35 +883,17 @@ module.exports = function setupSocketHandlers(io, redisClient) {
           return socket.emit("system_message", "Not a member of this room");
         }
 
-        // 🔍 MODERATION CHECK
-        const moderationResult = await moderateMessage(message);
-        
-        if (!moderationResult.isSafe) {
-          // ❌ UNSAFE MESSAGE - Block and warn user
-          console.log(`🚫 Blocked unsafe message in room ${fullRoomId} from ${anonId}: ${moderationResult.categories}`);
-          
-          // Create warning record
-          await UserWarning.create({
-            userId: socket.user?.id,
-            anonId: anonId,
-            roomId: fullRoomId,
-            roomType: "community",
-            violationType: Object.keys(moderationResult.categories)[0],
-            reason: moderationResult.warning,
-            message: message.substring(0, 200),
+        const remainingCooldownMs = getRemainingCooldownMs(identity);
+        if (remainingCooldownMs > 0) {
+          socket.emit("message_cooldown", {
+            remainingSeconds: Math.ceil(remainingCooldownMs / 1000),
           });
-
-          // Send warning to user
-          socket.emit("moderation_warning", {
-            warning: moderationResult.warning,
-            category: Object.keys(moderationResult.categories)[0],
-            timestamp: Date.now(),
-          });
-
-          return; // Don't broadcast the message
+          return;
         }
+        startCooldown(identity);
+        socket.emit("message_cooldown", { remainingSeconds: 10 });
 
-        // ✅ SAFE MESSAGE - Broadcast to room
+        // Broadcast first, then moderate asynchronously.
         const msgDoc = await Message.create({
           senderType: "anonymous",
           senderId: anonId,
@@ -815,6 +915,36 @@ module.exports = function setupSocketHandlers(io, redisClient) {
           }
         }
 
+        (async () => {
+          try {
+            const moderationResult = await moderateMessage(message);
+            if (moderationResult.isSafe) return;
+
+            await Message.deleteOne({ _id: msgDoc._id });
+            io.to(fullRoomId).emit("message_deleted", { messageId: msgDoc._id });
+
+            if (socket.user?.id) {
+              await UserWarning.create({
+                userId: socket.user.id,
+                anonId: anonId,
+                roomId: fullRoomId,
+                roomType: "community",
+                violationType: Object.keys(moderationResult.categories)[0],
+                reason: moderationResult.warning,
+                message: message.substring(0, 200),
+              });
+            }
+
+            socket.emit("moderation_warning", {
+              warning: moderationResult.warning,
+              category: Object.keys(moderationResult.categories)[0],
+              timestamp: Date.now(),
+            });
+          } catch (moderationErr) {
+            console.error("community background moderation error:", moderationErr);
+          }
+        })();
+
       } catch (err) {
         console.error("send_room_message error:", err);
       }
@@ -827,12 +957,14 @@ module.exports = function setupSocketHandlers(io, redisClient) {
         const stillHas = await storage.identityHasSockets(identity);
 
         if (!stillHas) {
+          inMemory.anonMessageCooldownUntil.delete(identity);
           const rooms = await storage.getIdentityRooms(identity);
           for (const r of rooms) {
             await storage.removeIdentityFromRoom(r, identity);
             await storage.removeRoomFromIdentity(identity, r);
             io.to(r).emit("system_message", "A user left");
             io.to(r).emit("online_count", { count: await storage.getRoomOnlineCount(r) });
+            await emitStaffOnlineUpdate(r);
           }
         }
       } catch (err) {
@@ -841,3 +973,5 @@ module.exports = function setupSocketHandlers(io, redisClient) {
     });
   };
 };
+
+

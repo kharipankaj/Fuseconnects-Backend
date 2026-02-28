@@ -6,9 +6,12 @@ module.exports = function socketAuth(socket, next) {
   try {
     const cookieHeader = socket.handshake.headers.cookie || "";
     const cookies = cookieHeader ? cookie.parse(cookieHeader) : {};
-    const accessToken = cookies.accessToken;
+    const bearer = socket.handshake.headers.authorization || "";
+    const bearerToken = bearer.startsWith("Bearer ") ? bearer.slice(7) : null;
+    const authToken = socket.handshake.auth?.token || null;
+    const accessToken = cookies.accessToken || authToken || bearerToken;
 
-    // Allow anonymous socket connections when no auth cookie is present.
+    // Allow anonymous socket connections when auth token is not present.
     if (!accessToken) {
       socket.user = null;
       return next();
@@ -18,9 +21,7 @@ module.exports = function socketAuth(socket, next) {
     socket.user = decoded;
     next();
   } catch (err) {
-    if (err.name === "TokenExpiredError") {
-      return next(new Error("TOKEN_EXPIRED"));
-    }
-    next(new Error("Token is not valid"));
+    socket.user = null;
+    next();
   }
 };
