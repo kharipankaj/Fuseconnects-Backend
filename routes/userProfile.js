@@ -4,6 +4,35 @@ const auth = require("../middleware/auth.js");
 
 const router = express.Router();
 
+// Public usernames list for sitemap generation (no auth)
+router.get("/public/list", async (req, res) => {
+  try {
+    const rawLimit = Number(req.query.limit);
+    const limit = Number.isFinite(rawLimit)
+      ? Math.max(1, Math.min(rawLimit, 5000))
+      : 500;
+
+    const users = await User.find({
+      username: { $exists: true, $ne: "" },
+      isPrivate: { $ne: true },
+    })
+      .select("username createdAt")
+      .sort({ createdAt: -1 })
+      .limit(limit)
+      .lean();
+
+    return res.json(
+      users.map((u) => ({
+        username: u.username,
+        lastmod: u.createdAt || null,
+      }))
+    );
+  } catch (err) {
+    console.error("Public user list error:", err);
+    return res.status(500).json({ error: "Server error" });
+  }
+});
+
 router.get("/:username", auth, async (req, res) => {
   try {
     const user = await User.findOne({ username: req.params.username });

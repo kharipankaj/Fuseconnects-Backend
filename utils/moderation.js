@@ -1,4 +1,14 @@
 const axios = require("axios");
+let hasLoggedMissingKey = false;
+
+function getGoogleAiKey() {
+  return (
+    process.env.GOOGLE_AI_API_KEY ||
+    process.env.GEMINI_API_KEY ||
+    process.env.GOOGLE_API_KEY ||
+    ""
+  ).trim();
+}
 
 /**
  * Content Moderation Utility using Gemini API
@@ -15,10 +25,13 @@ async function analyzeMessage(message) {
     return { isSafe: true, categories: {} };
   }
 
-  const apiKey = process.env.GOOGLE_AI_API_KEY;
+  const apiKey = getGoogleAiKey();
   
   if (!apiKey) {
-    console.warn("⚠️ GOOGLE_AI_API_KEY not set, skipping moderation");
+    if (!hasLoggedMissingKey) {
+      console.warn("AI moderation key missing (GOOGLE_AI_API_KEY/GEMINI_API_KEY/GOOGLE_API_KEY). Skipping AI check.");
+      hasLoggedMissingKey = true;
+    }
     return { isSafe: true, categories: {}, warning: "Moderation service unavailable" };
   }
 
@@ -56,6 +69,7 @@ Message to analyze:
     const models = [
       'gemini-2.0-flash',
       'gemini-1.5-flash',
+      'gemini-1.5-flash-8b',
       'gemini-pro'
     ];
 
@@ -103,7 +117,7 @@ Message to analyze:
             headers: {
               "Content-Type": "application/json"
             },
-            timeout: 5000
+            timeout: 12000
           }
         );
         console.log(`✅ Moderation API responded with model: ${model}`);
@@ -231,3 +245,4 @@ module.exports = {
   quickBadWordCheck,
   getWarningMessage
 };
+

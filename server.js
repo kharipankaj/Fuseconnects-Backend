@@ -108,6 +108,13 @@ const io = new Server(httpServer, {
   },
 });
 
+const hasAiKey = !!(
+  (process.env.GOOGLE_AI_API_KEY || "").trim() ||
+  (process.env.GEMINI_API_KEY || "").trim() ||
+  (process.env.GOOGLE_API_KEY || "").trim()
+);
+console.log(`AI moderation key: ${hasAiKey ? "configured" : "missing"}`);
+
 const attachAll = setupSocketHandlers(io);
 
 io.use(require("./middleware/socketAuth"));
@@ -147,4 +154,3 @@ process.on("SIGINT", () => {
 });
 
 module.exports = { app, io };
-
