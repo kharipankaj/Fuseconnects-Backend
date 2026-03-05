@@ -39,29 +39,100 @@ function generateRefreshToken(userId) {
   );
 }
 
+function normalizeMobile(input) {
+  const digits = String(input || "").replace(/\D/g, "");
+  if (digits.length === 10) return digits;
+  if (digits.length === 12 && digits.startsWith("91")) return digits.slice(2);
+  if (digits.length === 11 && digits.startsWith("0")) return digits.slice(1);
+  return null;
+}
+
+async function findUserByIdentifier(identifier) {
+  const raw = String(identifier || "").trim();
+  if (!raw) return null;
+
+  const queries = [
+    { username: raw },
+    { username: { $regex: new RegExp(`^${raw}$`, "i") } },
+  ];
+
+  if (raw.includes("@")) {
+    queries.push({ email: raw.toLowerCase() });
+  }
+
+  const mobile = normalizeMobile(raw);
+  if (mobile) {
+    queries.push({ mobile });
+  }
+
+  return User.findOne({ $or: queries });
+}
+
+router.post("/accounts", async (req, res) => {
+  try {
+    const identifier = String(req.body?.identifier || "").trim();
+    if (!identifier) {
+      return res.status(400).json({ message: "Email or phone number is required" });
+    }
+
+    const queries = [];
+    const maybeEmail = identifier.toLowerCase();
+    if (maybeEmail.includes("@")) {
+      queries.push({ email: maybeEmail });
+    }
+
+    const mobile = normalizeMobile(identifier);
+    if (mobile) {
+      queries.push({ mobile });
+    }
+
+    if (!queries.length) {
+      return res.status(400).json({ message: "Enter a valid email or phone number" });
+    }
+
+    const users = await User.find({ $or: queries })
+      .select("_id username firstName lastName displayPicture")
+      .limit(10);
+
+    return res.json({
+      accounts: users.map((user) => ({
+        id: user._id,
+        username: user.username,
+        firstName: user.firstName,
+        lastName: user.lastName || "",
+        displayPicture: user.displayPicture || "",
+      })),
+    });
+  } catch (err) {
+    console.error("Account lookup error:", err);
+    return res.status(500).json({ message: "Server error. Please try again." });
+  }
+});
+
 
 router.post("/", async (req, res) => {
   try {
-    const { username, password } = req.body;
+    const { username, identifier, password } = req.body;
+    const loginIdentifier = String(identifier || username || "").trim();
 
-    if (!username || !password) {
-      return res.status(400).json({ message: "Username and password required" });
+    if (!loginIdentifier || !password) {
+      return res.status(400).json({ message: "Identifier and password required" });
     }
 
-    const user = await User.findOne({ username });
+    const user = await findUserByIdentifier(loginIdentifier);
     if (!user) {
-      return res.status(400).json({ message: "Incorrect username or password" });
+      return res.status(400).json({ message: "Incorrect credentials" });
     }
 
     // Previously required email verification here; authentication now allowed regardless of verification status
 
     const isValid = await user.comparePassword(password);
     if (!isValid) {
-      return res.status(400).json({ message: "Incorrect username or password" });
+      return res.status(400).json({ message: "Incorrect credentials" });
     }
 
     if (process.env.NODE_ENV !== 'production') {
-      console.log(new Date().toISOString(), `✅ Login successful for user: ${username}`, {
+      console.log(new Date().toISOString(), `✅ Login successful for user: ${user.username}`, {
         origin: req.headers.origin || null,
         userAgent: req.headers['user-agent'] || null,
       });
@@ -93,7 +164,7 @@ router.post("/", async (req, res) => {
     await user.save();
 
     if (process.env.NODE_ENV !== 'production') {
-      console.log(new Date().toISOString(), `🔐 Stored refresh token for user: ${username}`, {
+      console.log(new Date().toISOString(), `🔐 Stored refresh token for user: ${user.username}`, {
         refreshTokensCount: user.refreshTokens.length,
         device: req.headers['user-agent'] || 'web',
       });
@@ -113,12 +184,12 @@ router.post("/", async (req, res) => {
     });
 
     if (process.env.NODE_ENV !== 'production') {
-      console.log(new Date().toISOString(), `🍪 Sent refresh cookie for user: ${username}`, {
+      console.log(new Date().toISOString(), `🍪 Sent refresh cookie for user: ${user.username}`, {
         secure: isProd,
         sameSite: cookieOptions.sameSite,
       });
 
-      console.log(`🍪 Cookies set for user: ${username} (mode: ${isProd ? 'PROD' : 'DEV'})`);
+      console.log(`🍪 Cookies set for user: ${user.username} (mode: ${isProd ? 'PROD' : 'DEV'})`);
     }
 
     /* 8️⃣ Send safe response */
@@ -134,7 +205,7 @@ router.post("/", async (req, res) => {
       },
     });
 
-    if (process.env.NODE_ENV !== 'production') console.log(new Date().toISOString(), `✅ Login response sent for user: ${username}`);
+    if (process.env.NODE_ENV !== 'production') console.log(new Date().toISOString(), `✅ Login response sent for user: ${user.username}`);
 
   } catch (err) {
     console.error("❌ Login error:", err);
