@@ -10,6 +10,10 @@ const ModerationReport = require("../models/ModerationReport");
 const UserWarning = require("../models/UserWarning");
 const { moderateMessage } = require("../utils/moderation");
 const { checkIfUserIsBlocked } = require("../utils/blockingHelper");
+const attachReactionTapHandlers = require("./reactionTap");
+const attachMathQuizHandlers = require("./mathQuiz");
+const attachTypingRaceHandlers = require("./typingRace");
+const attachMemoryMatchHandlers = require("./memoryMatch");
 
 const inMemory = {
   userSockets: new Map(),
@@ -451,6 +455,11 @@ module.exports = function setupSocketHandlers(io, redisClient) {
     } catch (err) {
       console.warn("Failed to add socket to identity storage:", err);
     }
+
+    attachReactionTapHandlers(io, socket);
+    attachMathQuizHandlers(io, socket);
+    attachTypingRaceHandlers(io, socket);
+    attachMemoryMatchHandlers(io, socket);
 
     socket.on("join_general", async (payload = {}) => {
       try {

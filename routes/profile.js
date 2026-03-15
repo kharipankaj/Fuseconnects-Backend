@@ -20,7 +20,7 @@ const extractPublicId = (url) => {
 router.get("/", auth, async (req, res) => {
   try {
     const user = await User.findById(req.user.id).select(
-      "firstName lastName username bio displayPicture followerCount followingCount postCount SparkCount gender birthday location email mobile createdAt isPrivate country state district city"
+"firstName lastName username bio displayPicture followerCount followingCount postCount SparkCount gender birthday location email mobile upiId createdAt isPrivate country state district city"
     );
 
     if (!user) return res.status(404).json({ message: "User not found" });
@@ -59,7 +59,7 @@ router.get("/:username", auth, async (req, res) => {
     const currentUserId = req.user.id;
 
     const user = await User.findOne({ username }).select(
-      "firstName lastName username bio displayPicture followerCount followingCount postCount SparkCount gender birthday location followers isPrivate followRequests"
+"firstName lastName username bio displayPicture followerCount followingCount postCount SparkCount gender birthday location upiId followers isPrivate followRequests"
     );
 
     if (!user) return res.status(404).json({ message: "User not found" });

@@ -131,6 +131,11 @@ const userSchema = new mongoose.Schema({
         type: String,
         unique: true
     },
+    upiId: {
+        type: String,
+        trim: true,
+        default: ''
+    },
     credits: {
         type: Number,
         default: 80

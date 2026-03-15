@@ -88,6 +88,7 @@ app.use("/follow", require("./routes/follow"));
 app.use("/logout", require("./routes/logout"));
 app.use("/stories", auth, require("./routes/uploadstory"));
 app.use("/referral", require("./routes/referral"));
+app.use("/wallet", require("./routes/wallet"));
 app.use("/notifications", auth, require("./routes/notifications"));
 app.use("/admin", auth, require("./routes/admin"));
 app.use("/rooms", require("./routes/room"));

@@ -5,8 +5,10 @@ const User = require('../models/User');
 const { hashToken } = require('../utils/crypto');
 const crypto = require('crypto');
 const { sendVerificationEmail } = require('../utils/mailer');
+const { creditWalletBalance, ensureWallet } = require('../services/walletService');
 
 const isProd = process.env.NODE_ENV === "production";
+const REFERRAL_BONUS_AMOUNT = 2;
 
 // Generate short-lived access token (15 minutes)
 function generateAccessToken(userId, username) {
@@ -131,13 +133,7 @@ router.post('/', async (req, res) => {
           return res.status(400).json({ error: 'Referrer has reached maximum referrals (50)' });
         }
         referredBy = referrer._id;
-        referrer.credits += 10;
         referrer.referrals.push(null);
-        referrer.creditHistory.push({
-          type: 'earned',
-          amount: 10,
-          reason: 'Referral bonus: 10 credits'
-        });
         await referrer.save();
       }
     }
@@ -163,11 +159,13 @@ router.post('/', async (req, res) => {
       mobile: mobile && mobile.toString().trim() ? mobile.toString().trim() : null,
       referralToken,
       referredBy,
+      usedReferralCodes: referralCode ? [referralCode] : [],
       anonId,
       city: city || '',
       displayPicture: 'https://res.cloudinary.com/dhiw3k8to/image/upload/v1758988596/myUploads/fzf1dskuqnzrt92rt6px.jpg'
     });
     const savedUser = await newUser.save();
+    await ensureWallet(savedUser._id);
 
     // Generate email verification token and send verification email
     try {
@@ -198,14 +196,18 @@ router.post('/', async (req, res) => {
       referrer.referrals[referrer.referrals.length - 1] = savedUser._id; // Replace null with actual user ID
       await referrer.save();
 
-      // Award 5 credits to new user
-      savedUser.credits += 5;
-      savedUser.creditHistory.push({
-        type: 'earned',
-        amount: 5,
-        reason: 'Referral bonus: 5 credits'
+      await ensureWallet(referrer._id);
+      await creditWalletBalance({
+        userId: referrer._id,
+        type: 'bonus',
+        amount: REFERRAL_BONUS_AMOUNT,
+        balanceBucket: 'bonus_balance',
+        referenceId: `signup_referral:${savedUser._id.toString()}`,
+        metadata: {
+          referredUserId: savedUser._id.toString(),
+          referralCode,
+        }
       });
-      await savedUser.save();
     }
 
     // Return success without issuing tokens; frontend should prompt user to verify email
