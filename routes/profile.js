@@ -12,7 +12,7 @@ router.get("/", auth, async (req, res) => {
   try {
     const { userId } = req.user;
 
-    const user = await User.findById(userId).select("-password -refreshTokens");
+    const user = await User.findById(userId).select('-password -refreshTokens');
 
     if (!user) {
       return res.status(404).json({
@@ -22,13 +22,26 @@ router.get("/", auth, async (req, res) => {
 
     console.log("✅ Profile:", user.username, "balance:", user.balance);
 
+    const stats = {
+      totalGames: user.gamesPlayed || 0,
+      wins: user.totalWins || 0,
+      winRate: user.gamesPlayed ? ((user.totalWins / user.gamesPlayed) * 100).toFixed(1) : '0.0',
+      referralEarnings: 0
+    };
+
     return res.json({
       success: true,
       data: {
         _id: user._id,
         username: user.username,
-        walletBalance: user.balance || 1000,
+        firstName: user.firstName,
+        lastName: user.lastName || '',
+        name: `${user.firstName} ${user.lastName || ''}`.trim(),
+        walletBalance: user.walletBalance || user.balance || 1000,
         role: user.role || "user",
+        stats,
+        referralCode: user.username.toUpperCase(),
+        recentTransactions: []
       }
     });
 

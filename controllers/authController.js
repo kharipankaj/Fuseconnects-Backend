@@ -386,6 +386,13 @@ exports.getProfile = async (req, res) => {
       return res.status(404).json({ success: false, message: 'User not found' });
     }
 
+    const stats = {
+      totalGames: user.gamesPlayed || 0,
+      wins: user.totalWins || 0,
+      winRate: user.gamesPlayed ? ((user.totalWins / user.gamesPlayed) * 100).toFixed(1) : 0,
+      referralEarnings: 0
+    };
+
     res.json({
       success: true,
       data: {
@@ -398,14 +405,9 @@ exports.getProfile = async (req, res) => {
         mobile: user.mobile,
         role: user.role,
         isVerified: user.isVerified,
-        walletBalance: 0,  // Add wallet fields
+        walletBalance: user.walletBalance || user.balance || 0,
         referralCode: user.username.toUpperCase(),
-        stats: {
-          totalGames: 0,
-          wins: 0,
-          winRate: 0,
-          referralEarnings: 0
-        },
+        stats,
         recentTransactions: []
       }
     });

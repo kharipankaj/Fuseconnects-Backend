@@ -200,6 +200,14 @@ class GameEngine {
         return { success: false, message: "Insufficient balance" };
       }
 
+      // Increment games played stat
+      try {
+        await this.Player.findByIdAndUpdate(playerId, { $inc: { gamesPlayed: 1 } });
+        console.log(`✅ STATS: gamesPlayed +1 for ${playerId.slice(-4)}`);
+      } catch (err) {
+        console.error(`❌ gamesPlayed update failed for ${playerId}:`, err.message);
+      }
+
       this.activeBets.set(playerId, {
         playerId,
         username,
@@ -265,6 +273,14 @@ class GameEngine {
         profit,
         won: true,
       });
+
+      // Increment total wins stat
+      try {
+        await this.Player.findByIdAndUpdate(playerId, { $inc: { totalWins: 1 } });
+        console.log(`✅ STATS: totalWins +1 for ${playerId.slice(-4)}`);
+      } catch (err) {
+        console.error(`❌ totalWins update failed for ${playerId}:`, err.message);
+      }
 
       this.io.emit("game:cashout", {
         username: bet.username,
